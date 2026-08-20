@@ -1,0 +1,9 @@
+{
+  "name": "socrates-voice-rag-root",
+  "version": "1.0.0",
+  "description": "Root configuration for running Voice RAG hackathon submission",
+  "scripts": {
+    "frontend": "npm run dev --prefix frontend",
+    "backend": "d:\\RAG\\backend\\.venv\\Scripts\\python d:\\RAG\\backend\\main.py"
+  }
+}

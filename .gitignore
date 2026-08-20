@@ -1,0 +1,38 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+backend/.venv/
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Chroma DB files
+backend/chroma_db/
+
+# Scratch/temporary files
+backend/scratch/
+
+# IDE / system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Node dependencies
+node_modules/
+frontend/node_modules/
+package-lock.json
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+frontend/dist/
