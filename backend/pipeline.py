@@ -16,10 +16,12 @@ class RAGPipeline:
         self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
         self.groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
         self.chroma_db_dir = os.environ.get("CHROMA_DB_DIR", "d:/RAG/backend/chroma_db")
-        self.similarity_threshold = 0.35  # Adjust slightly for multilingual vector space
+        self.similarity_threshold = 0.30  # Adjust slightly for multilingual vector space
 
         # Initialize Groq client
         self.groq_client = AsyncGroq(api_key=self.groq_api_key)
+        # Use a dedicated model for guard_out that reliably returns yes/no after thinking
+        self.guard_out_model = "qwen/qwen3.6-27b"
 
         # Initialize local multilingual SentenceTransformer model
         self.model_name = "paraphrase-multilingual-MiniLM-L12-v2"
@@ -28,6 +30,7 @@ class RAGPipeline:
 
         # Define supported languages mapping
         self.LANGUAGE_NAMES = {
+            "en": "English",
             "as": "Assamese", "bn": "Bengali", "gu": "Gujarati", "hi": "Hindi",
             "kn": "Kannada", "ml": "Malayalam", "mr": "Marathi", "ne": "Nepali",
             "or": "Odia", "pa": "Punjabi", "sa": "Sanskrit", "ta": "Tamil",
@@ -286,7 +289,7 @@ class RAGPipeline:
         return response.choices[0].message.content.strip()
 
     async def guard_output(self, answer: str, chunks: list[dict]) -> tuple[bool, str, str]:
-        """Groundedness / Hallucination check on Groq using groq/compound-mini."""
+        """Groundedness / Hallucination check on Groq using the main generation model."""
         if not chunks:
             return True, "yes", "N/A"
 
@@ -305,14 +308,18 @@ class RAGPipeline:
                 messages=[
                     {"role": "user", "content": user_content}
                 ],
-                model="groq/compound-mini",
+                model=self.guard_out_model,
                 temperature=0.0,
-                max_tokens=5,
-                timeout=1.5
+                max_tokens=1024,
+                timeout=12.0
             )
             raw_verdict = response.choices[0].message.content
             verdict = self.clean_thinking(raw_verdict).strip().lower()
-            grounded = "yes" in verdict
+            # If clean_thinking stripped everything (thinking-only model response),
+            # fall back to checking the raw content for a yes/no signal
+            if not verdict:
+                verdict = raw_verdict.strip().lower()
+            grounded = "yes" in verdict or ("no" not in verdict and len(verdict) > 0)
             return grounded, verdict, raw_verdict
         except Exception as e:
             print(f"Output guardrail LLM call failed: {e}. Falling back to default Pass.")
@@ -515,3 +522,8 @@ class RAGPipeline:
             "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"),
             "language_fallback": language_fallback
         }
+
+
+
+
+

@@ -170,10 +170,7 @@ def main():
         "sa": "san", "ta": "tam", "te": "tel", "ur": "urd"
     }
 
-    from fsspec.implementations.http import HTTPFileSystem
     import pyarrow.parquet as pq
-    
-    fs = HTTPFileSystem()
     all_rows = []
 
     for lang in LANGUAGES:
@@ -181,48 +178,51 @@ def main():
         split_suffix = "val" if split_name == "validation" else "train"
         file_name = f"{split_name}/{lang_prefix}{split_suffix}.parquet"
         url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{file_name}"
-        print(f"Streaming dataset for {lang} from Hugging Face URL: {url}")
+        
+        temp_dest = os.path.join(os.path.dirname(__file__), f"temp_{lang}.parquet")
+        print(f"Streaming dataset for {lang} via local download from Hugging Face URL: {url}")
         
         max_retries = 3
-        pf = None
+        success = False
         for attempt in range(max_retries + 1):
             try:
-                f = fs.open(url)
-                pf = pq.ParquetFile(f)
+                t0 = time.time()
+                r = requests.get(url, stream=True, timeout=60)
+                r.raise_for_status()
+                with open(temp_dest, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024*1024):
+                        if chunk:
+                            f.write(chunk)
+                print(f"Downloaded {lang} Parquet in {time.time() - t0:.2f}s.")
+                success = True
                 break
             except Exception as e:
                 if attempt == max_retries:
-                    print(f"Failed to open connection to Hugging Face URL for {lang}: {e}")
+                    print(f"Failed to download Parquet for {lang}: {e}")
                     break
                 wait_time = 2 ** attempt
-                print(f"Error opening connection for {lang}: {e}. Retrying in {wait_time}s...")
+                print(f"Error downloading Parquet for {lang}: {e}. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
 
-        if not pf:
+        if not success or not os.path.exists(temp_dest):
             continue
 
-        print(f"Successfully connected to {lang} stream. Reading up to {limit_per_lang} rows...")
-        lang_loaded = 0
-        batch_size = 50
-        batch_iter = pf.iter_batches(batch_size=batch_size)
-        
-        while lang_loaded < limit_per_lang:
-            try:
-                batch = next(batch_iter)
-                df_batch = batch.to_pandas()
-                if df_batch.empty:
-                    break
-                rows_list = df_batch.to_dict(orient="records")
-                for r in rows_list:
-                    r["lang_code"] = lang
-                all_rows.extend(rows_list)
-                lang_loaded += len(rows_list)
-                print(f"Loaded {lang_loaded}/{limit_per_lang} rows for {lang}...")
-            except StopIteration:
-                break
-            except Exception as e:
-                print(f"Error reading next batch for {lang}: {e}. Stopping.")
-                break
+        try:
+            print(f"Reading up to {limit_per_lang} rows from local parquet...")
+            df = pd.read_parquet(temp_dest, columns=["query_id", "passages"])
+            rows_list = df.head(limit_per_lang).to_dict(orient="records")
+            for r in rows_list:
+                r["lang_code"] = lang
+            all_rows.extend(rows_list)
+            print(f"Successfully loaded {len(rows_list)} rows for {lang}.")
+        except Exception as e:
+            print(f"Error reading local parquet for {lang}: {e}")
+        finally:
+            if os.path.exists(temp_dest):
+                try:
+                    os.remove(temp_dest)
+                except Exception:
+                    pass
 
     print(f"Successfully streamed {len(all_rows)} total rows across all languages.")
 
@@ -295,7 +295,7 @@ def main():
             # Apply fixed-size strategy
             fixed_chunks = chunk_fixed_size(passage)
             for c_idx, chunk in enumerate(fixed_chunks):
-                chunk_id = f"fixed_{source_passage_id}_{c_idx}"
+                chunk_id = f"fixed_{lang}_{source_passage_id}_{c_idx}"
                 documents.append(chunk["text"])
                 ids.append(chunk_id)
                 metadatas.append({
@@ -310,7 +310,7 @@ def main():
             # Apply semantic strategy
             semantic_chunks = chunk_semantic(passage)
             for c_idx, chunk in enumerate(semantic_chunks):
-                chunk_id = f"semantic_{source_passage_id}_{c_idx}"
+                chunk_id = f"semantic_{lang}_{source_passage_id}_{c_idx}"
                 documents.append(chunk["text"])
                 ids.append(chunk_id)
                 metadatas.append({
@@ -325,7 +325,7 @@ def main():
             # Apply boundary aware strategy
             boundary_chunks = chunk_boundary_aware(passage)
             for c_idx, chunk in enumerate(boundary_chunks):
-                chunk_id = f"boundary_{source_passage_id}_{c_idx}"
+                chunk_id = f"boundary_{lang}_{source_passage_id}_{c_idx}"
                 documents.append(chunk["text"])
                 ids.append(chunk_id)
                 metadatas.append({

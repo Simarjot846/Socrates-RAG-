@@ -38,23 +38,34 @@ async def main():
     url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{file_name}"
     print(f"Loading benchmark queries from dataset stream URL: {url}...")
     
-    from fsspec.implementations.http import HTTPFileSystem
+    import requests
     import pyarrow.parquet as pq
     
     sample_queries = []
+    temp_dest = os.path.join(os.path.dirname(__file__), "temp_benchmark.parquet")
     try:
-        fs = HTTPFileSystem()
-        f = fs.open(url)
-        pf = pq.ParquetFile(f)
-        batch_iter = pf.iter_batches(batch_size=100)
-        first_batch = next(batch_iter)
-        df_batch = first_batch.to_pandas()
+        t0 = time.time()
+        print(f"Downloading benchmark Parquet file locally...")
+        r = requests.get(url, stream=True, timeout=60)
+        r.raise_for_status()
+        with open(temp_dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+        print(f"Downloaded benchmark Parquet in {time.time() - t0:.2f}s.")
         
+        df_batch = pd.read_parquet(temp_dest, columns=[query_column])
         raw_queries = df_batch[query_column].dropna().unique()
         sample_queries = [str(q) for q in raw_queries[:40]]
     except Exception as e:
-        print(f"Error fetching benchmark queries from parquet stream: {e}. Falling back to dummy query list.")
+        print(f"Error fetching benchmark queries from parquet: {e}. Falling back to dummy query list.")
         sample_queries = ["What is voice RAG?", "How does semantic chunking work?"]
+    finally:
+        if os.path.exists(temp_dest):
+            try:
+                os.remove(temp_dest)
+            except Exception:
+                pass
         
     print(f"Loaded {len(sample_queries)} queries for benchmarking.")
     

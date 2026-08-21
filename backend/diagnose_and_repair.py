@@ -178,26 +178,31 @@ def fetch_rows_for_language(lang, total):
     file_name = f"{split_name}/{lang_prefix}{split_suffix}.parquet"
     url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{file_name}"
     
-    # Open using fsspec with readahead caching and 1MB block size to prevent range request hangs
-    f = fsspec.open(url, "rb", cache_type="readahead", block_size=1024*1024).open()
-    pf = pq.ParquetFile(f)
+    temp_dest = os.path.join(os.path.dirname(__file__), f"temp_{lang}.parquet")
+    print(f"[{lang}] Downloading validation Parquet file to temporary path: {temp_dest}...")
+    
+    t0 = time.time()
+    try:
+        r = requests.get(url, stream=True, timeout=60)
+        r.raise_for_status()
+        with open(temp_dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+        print(f"[{lang}] Downloaded in {time.time() - t0:.2f}s.")
         
-    rows = []
-    # Fetch only query_id and passages columns to speed up download
-    batch_iter = pf.iter_batches(batch_size=50, columns=["query_id", "passages"])
-    while len(rows) < total:
-        try:
-            batch = next(batch_iter)
-            df_batch = batch.to_pandas()
-            if df_batch.empty:
-                break
-            for r in df_batch.to_dict(orient="records"):
-                r["lang_code"] = lang
-                rows.append(r)
-        except StopIteration:
-            break
-            
-    return rows[:total]
+        import pandas as pd
+        df = pd.read_parquet(temp_dest, columns=["query_id", "passages"])
+        rows = df.head(total).to_dict(orient="records")
+        for r in rows:
+            r["lang_code"] = lang
+        return rows
+    finally:
+        if os.path.exists(temp_dest):
+            try:
+                os.remove(temp_dest)
+            except Exception:
+                pass
 
 def fetch_rows_for_language_safe(lang, total, max_retries=3):
     for attempt in range(max_retries):
@@ -259,7 +264,7 @@ def index_documents(documents, lang):
         # Fixed
         fixed_chunks = chunk_fixed_size(passage)
         for c_idx, chunk in enumerate(fixed_chunks):
-            chunk_id = f"fixed_{source_passage_id}_{c_idx}"
+            chunk_id = f"fixed_{lang}_{source_passage_id}_{c_idx}"
             chunks_to_add.append({
                 "id": chunk_id,
                 "text": chunk["text"],
@@ -275,7 +280,7 @@ def index_documents(documents, lang):
         # Semantic
         semantic_chunks = chunk_semantic(passage)
         for c_idx, chunk in enumerate(semantic_chunks):
-            chunk_id = f"semantic_{source_passage_id}_{c_idx}"
+            chunk_id = f"semantic_{lang}_{source_passage_id}_{c_idx}"
             chunks_to_add.append({
                 "id": chunk_id,
                 "text": chunk["text"],
@@ -291,7 +296,7 @@ def index_documents(documents, lang):
         # Boundary
         boundary_chunks = chunk_boundary_aware(passage)
         for c_idx, chunk in enumerate(boundary_chunks):
-            chunk_id = f"boundary_{source_passage_id}_{c_idx}"
+            chunk_id = f"boundary_{lang}_{source_passage_id}_{c_idx}"
             chunks_to_add.append({
                 "id": chunk_id,
                 "text": chunk["text"],
@@ -357,7 +362,7 @@ def main():
     repaired_counts = {}
     for lang in under_indexed:
         print(f"\nRepairing {lang}...")
-        rows = fetch_rows_for_language_safe(lang, total=200)  # slightly higher than before to clear the threshold
+        rows = fetch_rows_for_language_safe(lang, total=30)  # slightly higher than before to clear the threshold
         if not rows:
             repaired_counts[lang] = 0
             continue

@@ -58,8 +58,9 @@ async def predict_audio(file: UploadFile = File(...)):
     if not pipeline:
         raise HTTPException(status_code=503, detail="Pipeline not initialized yet")
     
-    # Save UploadFile to a local temporary file for Sarvam STT processing
-    temp_dir = tempfile.gettempdir()
+    # Save UploadFile to a local temporary file on D drive (since C drive is out of space)
+    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+    os.makedirs(temp_dir, exist_ok=True)
     ext = os.path.splitext(file.filename)[1] or ".wav"
     temp_file_path = os.path.join(temp_dir, f"upload_{os.getpid()}_{int(time.time())}{ext}")
     
