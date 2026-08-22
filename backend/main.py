@@ -90,7 +90,7 @@ def get_status():
     if not pipeline:
         return {"status": "initializing", "db_count": 0}
     try:
-        count = pipeline.collection.count()
+        count = pipeline.qdrant_client.get_collection(pipeline.collection_name).points_count
         return {
             "status": "ready",
             "db_count": count,

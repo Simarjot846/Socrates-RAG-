@@ -7,7 +7,6 @@ import numpy as np
 from groq import AsyncGroq
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from transformers import AutoTokenizer
 
 class RAGPipeline:
     def __init__(self):
@@ -22,10 +21,8 @@ class RAGPipeline:
         self.groq_client = AsyncGroq(api_key=self.groq_api_key)
         # Use a dedicated model for guard_out that reliably returns yes/no after thinking
         self.guard_out_model = "qwen/qwen3.6-27b"
-
-        # Initialize local tokenizer for multilingual SentenceTransformer model
         self.model_name = "paraphrase-multilingual-MiniLM-L12-v2"
-        self.tokenizer = AutoTokenizer.from_pretrained(f"sentence-transformers/{self.model_name}")
+
 
         # Define supported languages mapping
         self.LANGUAGE_NAMES = {
@@ -50,8 +47,6 @@ class RAGPipeline:
         cleaned = re.sub(r'<think>.*$', '', cleaned, flags=re.DOTALL)
         return cleaned.strip()
 
-    def get_token_count(self, text: str) -> int:
-        return len(self.tokenizer.encode(text, add_special_tokens=False))
 
     def _sync_transcribe(self, file_path: str) -> dict:
         """Synchronous wrapper for transcription, executed in a thread pool."""
