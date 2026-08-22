@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Install system dependencies (e.g. git, build-essential if needed for some libraries)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
@@ -15,12 +15,11 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 # Copy backend files
 COPY . /code
 
-# Create directories and set open permissions for HF user (UID 1000)
+# Create directories and set open permissions
 RUN mkdir -p /code/chroma_db /code/temp && chmod -R 777 /code
 
-# Environment variables default overrides for HF Space
+# Set environment variables
 ENV CHROMA_DB_DIR=/code/chroma_db
-ENV PORT=7860
 
-# Run FastAPI on Hugging Face default port 7860
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Run FastAPI using dynamic port binding (important for Render)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
