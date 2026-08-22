@@ -162,16 +162,27 @@ class RAGPipeline:
         if hf_token:
             headers["Authorization"] = f"Bearer {hf_token}"
 
-        url = f"https://api-inference.huggingface.co/models/sentence-transformers/{self.model_name}"
+        # New HF Inference API endpoint (v2)
+        url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/{self.model_name}"
 
         max_retries = 6
         for attempt in range(max_retries):
             try:
-                response = requests.post(url, headers=headers, json={"inputs": [text]}, timeout=30)
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json={"inputs": text, "options": {"wait_for_model": True}},
+                    timeout=30
+                )
                 if response.status_code == 200:
                     res = response.json()
-                    if isinstance(res, list) and len(res) > 0:
-                        return res[0]
+                    # Response can be: [float, ...] or [[float, ...]] or [[[float,...]]]
+                    # Flatten until we get a flat list of floats
+                    while isinstance(res, list) and isinstance(res[0], list):
+                        res = res[0]
+                    if isinstance(res, list) and isinstance(res[0], float):
+                        return res
+                    print(f"HF API unexpected format: {str(res)[:100]}")
                 elif response.status_code == 503:
                     estimated_time = 20
                     try:
@@ -187,7 +198,7 @@ class RAGPipeline:
                     time.sleep(10)
                     continue
                 else:
-                    print(f"HF Inference API status {response.status_code}: {response.text}")
+                    print(f"HF Inference API status {response.status_code}: {response.text[:200]}")
             except Exception as e:
                 print(f"HF Inference API call failed (attempt {attempt+1}/{max_retries}): {e}")
             time.sleep(2)
