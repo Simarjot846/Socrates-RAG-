@@ -7,6 +7,7 @@ import numpy as np
 from groq import AsyncGroq
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from fastembed import TextEmbedding
 
 class RAGPipeline:
     def __init__(self):
@@ -38,6 +39,13 @@ class RAGPipeline:
         self.qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
         self.qdrant_client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key)
+
+        # Load fastembed ONNX model (pre-cached in Docker image, no network needed)
+        print(f"Loading embedding model: {self.model_name} via fastembed ONNX...")
+        self.embedding_model = TextEmbedding(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        )
+        print("Embedding model loaded.")
 
     def clean_thinking(self, text: str) -> str:
         """Strips <think>...</think> reasoning blocks from LLM responses."""
@@ -156,54 +164,9 @@ class RAGPipeline:
             return True, ""
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed query using Hugging Face Serverless Inference API."""
-        hf_token = os.environ.get("HF_TOKEN", "")
-        headers = {"Content-Type": "application/json"}
-        if hf_token:
-            headers["Authorization"] = f"Bearer {hf_token}"
-
-        # New HF Inference API endpoint (v2)
-        url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/{self.model_name}"
-
-        max_retries = 6
-        for attempt in range(max_retries):
-            try:
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    json={"inputs": text, "options": {"wait_for_model": True}},
-                    timeout=30
-                )
-                if response.status_code == 200:
-                    res = response.json()
-                    # Response can be: [float, ...] or [[float, ...]] or [[[float,...]]]
-                    # Flatten until we get a flat list of floats
-                    while isinstance(res, list) and isinstance(res[0], list):
-                        res = res[0]
-                    if isinstance(res, list) and isinstance(res[0], float):
-                        return res
-                    print(f"HF API unexpected format: {str(res)[:100]}")
-                elif response.status_code == 503:
-                    estimated_time = 20
-                    try:
-                        estimated_time = response.json().get("estimated_time", 20)
-                    except Exception:
-                        pass
-                    wait = min(float(estimated_time), 20)
-                    print(f"HF model loading (attempt {attempt+1}/{max_retries}), waiting {wait:.0f}s...")
-                    time.sleep(wait)
-                    continue
-                elif response.status_code == 429:
-                    print(f"HF API rate limited (attempt {attempt+1}/{max_retries}), waiting 10s...")
-                    time.sleep(10)
-                    continue
-                else:
-                    print(f"HF Inference API status {response.status_code}: {response.text[:200]}")
-            except Exception as e:
-                print(f"HF Inference API call failed (attempt {attempt+1}/{max_retries}): {e}")
-            time.sleep(2)
-
-        raise RuntimeError("Failed to generate embedding via Hugging Face Inference API")
+        """Embed query using fastembed ONNX — model pre-cached in Docker image."""
+        embeddings = list(self.embedding_model.embed([text]))
+        return embeddings[0].tolist()
 
     def retrieve(self, query_vector: list[float], detected_lang_code: str, top_k=5) -> tuple[list[dict], bool]:
         """Retrieves top-k candidates across all strategies, filters by language, and re-ranks."""

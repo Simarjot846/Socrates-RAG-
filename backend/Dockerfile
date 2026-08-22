@@ -1,25 +1,17 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-WORKDIR /code
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy requirements and install
-COPY ./requirements.txt /code/requirements.txt
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+# Pre-download the fastembed ONNX model at BUILD time (not runtime)
+# This bakes the model into the image so no outbound network needed at startup
+RUN python -c "from fastembed import TextEmbedding; model = TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); list(model.embed(['warmup']))"
 
-# Copy backend files
-COPY . /code
+COPY . .
 
-# Create directories and set open permissions
-RUN mkdir -p /code/chroma_db /code/temp && chmod -R 777 /code
+EXPOSE 10000
 
-# Set environment variables
-ENV CHROMA_DB_DIR=/code/chroma_db
-
-# Run FastAPI using dynamic port binding (important for Render)
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]

@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 numpy==1.26.4
 requests==2.32.3
 langdetect==1.0.9
+fastembed==0.4.2

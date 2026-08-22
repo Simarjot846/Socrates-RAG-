@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: rag-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
