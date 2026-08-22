@@ -5,8 +5,8 @@ import requests
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import chromadb
-from chromadb.utils import embedding_functions
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from dotenv import load_dotenv
 
 def split_into_sentences(text: str) -> list[str]:
@@ -226,34 +226,38 @@ def main():
 
     print(f"Successfully streamed {len(all_rows)} total rows across all languages.")
 
-    # Initialize Chroma DB
-    print("Initializing Chroma DB...")
-    chroma_dir = os.environ.get("CHROMA_DB_DIR", "d:/RAG/backend/chroma_db")
-    os.makedirs(chroma_dir, exist_ok=True)
-    chroma_client = chromadb.PersistentClient(path=chroma_dir)
-    
-    # Use built-in sentence transformer embedding function
-    embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
-    
+    # Initialize Qdrant Client
+    print("Initializing Qdrant Client...")
+    qdrant_url = os.environ.get("QDRANT_URL", "")
+    qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
+    qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+
     # Re-create/get the collection
     if os.environ.get("CHROMA_CLEAR", "true").lower() == "true":
         try:
-            chroma_client.delete_collection(collection_name)
+            qdrant_client.delete_collection(collection_name)
             print(f"Cleared existing collection: {collection_name}")
         except Exception:
             pass
-    
-    collection = chroma_client.get_or_create_collection(
-        name=collection_name,
-        embedding_function=embedding_func
-    )
+
+    try:
+        qdrant_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=384,
+                distance=models.Distance.COSINE
+            )
+        )
+        print(f"Created collection: {collection_name}")
+    except Exception as e:
+        print(f"Collection creation skipped: {e}")
 
     print("Indexing passages...")
 
     total_passages_processed = 0
     total_chunks_added = 0
     
-    # Accumulate inputs for batch insertion to optimize Chroma write speed
+    # Accumulate inputs for batch insertion to optimize write speed
     documents = []
     metadatas = []
     ids = []
@@ -339,18 +343,40 @@ def main():
                 
             total_passages_processed += 1
 
-    # Add to Chroma in batches
-    batch_size = 500
-    print(f"Adding {len(documents)} chunks to Chroma in batches of {batch_size}...")
+    # Add to Qdrant in batches
+    batch_size = 256
+    print(f"Adding {len(documents)} chunks to Qdrant in batches of {batch_size}...")
     for i in range(0, len(documents), batch_size):
         end_idx = min(i + batch_size, len(documents))
-        collection.add(
-            documents=documents[i:end_idx],
-            metadatas=metadatas[i:end_idx],
-            ids=ids[i:end_idx]
+        batch_docs = documents[i:end_idx]
+        batch_metas = metadatas[i:end_idx]
+        batch_ids = ids[i:end_idx]
+        
+        # 1. Generate embeddings using local SentenceTransformer
+        batch_vectors = model.encode(batch_docs, show_progress_bar=False).tolist()
+        
+        # 2. Prepare points for Qdrant
+        points = []
+        import uuid
+        for idx in range(len(batch_ids)):
+            payload = batch_metas[idx].copy()
+            payload["text"] = batch_docs[idx]
+            
+            point_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, batch_ids[idx]))
+            
+            points.append(models.PointStruct(
+                id=point_uuid,
+                vector=batch_vectors[idx],
+                payload=payload
+            ))
+            
+        # 3. Upload to Qdrant
+        qdrant_client.upsert(
+            collection_name=collection_name,
+            points=points
         )
-        total_chunks_added += (end_idx - i)
-        print(f"Added {total_chunks_added}/{len(documents)} chunks...")
+        total_chunks_added += len(points)
+        print(f"Uploaded {total_chunks_added}/{len(documents)} chunks...")
 
     print("\n" + "="*50)
     print("INDEXING STATS PER LANGUAGE:")
@@ -362,7 +388,10 @@ def main():
     print("Indexing completed successfully!")
     print(f"Total source passages processed: {total_passages_processed}")
     print(f"Total chunks indexed: {total_chunks_added}")
-    print(f"Collection count: {collection.count()}")
+    try:
+        print(f"Collection count: {qdrant_client.get_collection(collection_name).points_count}")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ import re
 import requests
 import numpy as np
 from groq import AsyncGroq
-import chromadb
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from transformers import AutoTokenizer
 
 class RAGPipeline:
@@ -35,12 +36,11 @@ class RAGPipeline:
             "te": "Telugu", "ur": "Urdu",
         }
 
-        # Initialize Chroma DB client
-        self.chroma_client = chromadb.PersistentClient(path=self.chroma_db_dir)
+        # Initialize Qdrant Client
+        self.qdrant_url = os.environ.get("QDRANT_URL", "")
+        self.qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
-        self.collection = self.chroma_client.get_or_create_collection(
-            name=self.collection_name
-        )
+        self.qdrant_client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key)
 
     def clean_thinking(self, text: str) -> str:
         """Strips <think>...</think> reasoning blocks from LLM responses."""
@@ -119,24 +119,35 @@ class RAGPipeline:
 
         try:
             # Query matching the specific language first
-            result = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=1,
-                where={"language": detected_lang_code},
-                include=["embeddings", "documents"]
+            result = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="language",
+                            match=models.MatchValue(value=detected_lang_code),
+                        )
+                    ]
+                ),
+                limit=1,
+                with_vectors=True,
+                with_payload=True
             )
             # Fallback to unfiltered if language-specific query returns nothing
-            if not result or "embeddings" not in result or result["embeddings"] is None or len(result["embeddings"]) == 0 or len(result["embeddings"][0]) == 0:
-                result = self.collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=1,
-                    include=["embeddings", "documents"]
+            if not result:
+                result = self.qdrant_client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_embedding,
+                    limit=1,
+                    with_vectors=True,
+                    with_payload=True
                 )
                 
-            if not result or "embeddings" not in result or result["embeddings"] is None or len(result["embeddings"]) == 0 or len(result["embeddings"][0]) == 0:
+            if not result:
                 return True, ""
             
-            chunk_emb = result["embeddings"][0][0]
+            chunk_emb = result[0].vector
             q_arr = np.array(query_embedding)
             c_arr = np.array(chunk_emb)
             
@@ -186,37 +197,44 @@ class RAGPipeline:
         # Query only the matching language
         for strategy in strategies:
             try:
-                results = self.collection.query(
-                    query_embeddings=[query_vector],
-                    n_results=top_k * 2,
-                    where={"language": detected_lang_code},
-                    include=["documents", "metadatas", "embeddings"]
+                results = self.qdrant_client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    query_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="language",
+                                match=models.MatchValue(value=detected_lang_code),
+                            ),
+                            models.FieldCondition(
+                                key="strategy",
+                                match=models.MatchValue(value=strategy),
+                            )
+                        ]
+                    ),
+                    limit=top_k * 2,
+                    with_vectors=True,
+                    with_payload=True
                 )
                 
-                if results and results["ids"] and results["ids"][0]:
-                    ids = results["ids"][0]
-                    docs = results["documents"][0]
-                    metadatas = results["metadatas"][0]
-                    embeddings = results["embeddings"][0]
+                for point in results:
+                    c_id = str(point.id)
+                    payload = point.payload or {}
+                    doc_text = payload.get("text", "")
+                    vector = point.vector
 
-                    for idx in range(len(ids)):
-                        c_id = ids[idx]
-                        doc_text = docs[idx]
-                        metadata = metadatas[idx]
-                        vector = embeddings[idx]
-
-                        q_arr = np.array(query_vector)
-                        d_arr = np.array(vector)
-                        similarity = np.dot(q_arr, d_arr) / (np.linalg.norm(q_arr) * np.linalg.norm(d_arr))
-                        
-                        if doc_text not in candidates or similarity > candidates[doc_text]["similarity"]:
-                            candidates[doc_text] = {
-                                "chunk_id": metadata.get("chunk_id", c_id),
-                                "strategy": metadata.get("strategy", strategy),
-                                "source_passage_id": metadata.get("source_passage_id", ""),
-                                "text": doc_text,
-                                "similarity": float(similarity)
-                            }
+                    q_arr = np.array(query_vector)
+                    d_arr = np.array(vector)
+                    similarity = np.dot(q_arr, d_arr) / (np.linalg.norm(q_arr) * np.linalg.norm(d_arr))
+                    
+                    if doc_text not in candidates or similarity > candidates[doc_text]["similarity"]:
+                        candidates[doc_text] = {
+                            "chunk_id": payload.get("chunk_id", c_id),
+                            "strategy": payload.get("strategy", strategy),
+                            "source_passage_id": payload.get("source_passage_id", ""),
+                            "text": doc_text,
+                            "similarity": float(similarity)
+                        }
             except Exception as e:
                 print(f"Retrieval from strategy {strategy} for {detected_lang_code} failed: {e}")
 
@@ -226,36 +244,40 @@ class RAGPipeline:
             language_fallback = True
             for strategy in strategies:
                 try:
-                    results = self.collection.query(
-                        query_embeddings=[query_vector],
-                        n_results=top_k * 2,
-                        include=["documents", "metadatas", "embeddings"]
+                    results = self.qdrant_client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        query_filter=models.Filter(
+                            must=[
+                                models.FieldCondition(
+                                    key="strategy",
+                                    match=models.MatchValue(value=strategy),
+                                )
+                            ]
+                        ),
+                        limit=top_k * 2,
+                        with_vectors=True,
+                        with_payload=True
                     )
                     
-                    if results and results["ids"] and results["ids"][0]:
-                        ids = results["ids"][0]
-                        docs = results["documents"][0]
-                        metadatas = results["metadatas"][0]
-                        embeddings = results["embeddings"][0]
+                    for point in results:
+                        c_id = str(point.id)
+                        payload = point.payload or {}
+                        doc_text = payload.get("text", "")
+                        vector = point.vector
 
-                        for idx in range(len(ids)):
-                            c_id = ids[idx]
-                            doc_text = docs[idx]
-                            metadata = metadatas[idx]
-                            vector = embeddings[idx]
-
-                            q_arr = np.array(query_vector)
-                            d_arr = np.array(vector)
-                            similarity = np.dot(q_arr, d_arr) / (np.linalg.norm(q_arr) * np.linalg.norm(d_arr))
-                            
-                            if doc_text not in candidates or similarity > candidates[doc_text]["similarity"]:
-                                candidates[doc_text] = {
-                                    "chunk_id": metadata.get("chunk_id", c_id),
-                                    "strategy": metadata.get("strategy", strategy),
-                                    "source_passage_id": metadata.get("source_passage_id", ""),
-                                    "text": doc_text,
-                                    "similarity": float(similarity)
-                                }
+                        q_arr = np.array(query_vector)
+                        d_arr = np.array(vector)
+                        similarity = np.dot(q_arr, d_arr) / (np.linalg.norm(q_arr) * np.linalg.norm(d_arr))
+                        
+                        if doc_text not in candidates or similarity > candidates[doc_text]["similarity"]:
+                            candidates[doc_text] = {
+                                "chunk_id": payload.get("chunk_id", c_id),
+                                "strategy": payload.get("strategy", strategy),
+                                "source_passage_id": payload.get("source_passage_id", ""),
+                                "text": doc_text,
+                                "similarity": float(similarity)
+                            }
                 except Exception as e:
                     print(f"Unfiltered retrieval failed for strategy {strategy}: {e}")
 
