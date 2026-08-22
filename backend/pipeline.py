@@ -6,8 +6,7 @@ import requests
 import numpy as np
 from groq import AsyncGroq
 import chromadb
-from chromadb.utils import embedding_functions
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 
 class RAGPipeline:
     def __init__(self):
@@ -23,10 +22,9 @@ class RAGPipeline:
         # Use a dedicated model for guard_out that reliably returns yes/no after thinking
         self.guard_out_model = "qwen/qwen3.6-27b"
 
-        # Initialize local multilingual SentenceTransformer model
+        # Initialize local tokenizer for multilingual SentenceTransformer model
         self.model_name = "paraphrase-multilingual-MiniLM-L12-v2"
-        self.embed_model = SentenceTransformer(self.model_name)
-        self.tokenizer = self.embed_model.tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(f"sentence-transformers/{self.model_name}")
 
         # Define supported languages mapping
         self.LANGUAGE_NAMES = {
@@ -39,11 +37,9 @@ class RAGPipeline:
 
         # Initialize Chroma DB client
         self.chroma_client = chromadb.PersistentClient(path=self.chroma_db_dir)
-        embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=self.model_name)
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
         self.collection = self.chroma_client.get_or_create_collection(
-            name=self.collection_name,
-            embedding_function=embedding_func
+            name=self.collection_name
         )
 
     def clean_thinking(self, text: str) -> str:
@@ -154,9 +150,32 @@ class RAGPipeline:
             return True, ""
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed query locally using sentence-transformers."""
-        embedding = self.embed_model.encode(text)
-        return embedding.tolist()
+        """Embed query using Hugging Face Serverless Inference API to save RAM."""
+        hf_token = os.environ.get("HF_TOKEN", "")
+        headers = {}
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+            
+        url = f"https://api-inference.huggingface.co/models/sentence-transformers/{self.model_name}"
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(url, headers=headers, json={"inputs": [text]}, timeout=10)
+                if response.status_code == 200:
+                    res = response.json()
+                    if isinstance(res, list) and len(res) > 0:
+                        return res[0]
+                elif response.status_code == 503:
+                    # Model is loading on Hugging Face side, wait and retry
+                    time.sleep(2)
+                else:
+                    print(f"HF Inference API status {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"HF Inference API call failed: {e}")
+            time.sleep(0.5)
+            
+        raise RuntimeError("Failed to generate embedding via Hugging Face Inference API")
 
     def retrieve(self, query_vector: list[float], detected_lang_code: str, top_k=5) -> tuple[list[dict], bool]:
         """Retrieves top-k candidates across all strategies, filters by language, and re-ranks."""
