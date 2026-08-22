@@ -10,8 +10,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Chroma DB files
-backend/chroma_db/
+# Chroma DB files (commented out to include in deployment)
+# backend/chroma_db/
 
 # Scratch/temporary files
 backend/scratch/
