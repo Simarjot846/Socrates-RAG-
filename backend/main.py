@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import tempfile
 import time
@@ -8,8 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+# Ensure backend directory is in sys.path when run from outside this folder
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
 # Load environment variables
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(dotenv_path=os.path.join(backend_dir, ".env"))
 
 from pipeline import RAGPipeline
 
