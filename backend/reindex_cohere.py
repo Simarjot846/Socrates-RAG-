@@ -35,15 +35,27 @@ def cohere_embed(texts: list[str], input_type="search_document") -> list[list[fl
     url = "https://api.cohere.com/v1/embed"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
     payload = {"texts": texts, "model": COHERE_MODEL, "input_type": input_type, "truncate": "END"}
-    for attempt in range(3):
+    max_attempts = 5
+    for attempt in range(max_attempts):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=30)
             if r.status_code == 200:
                 return r.json()["embeddings"]
+            
+            # Handle rate limiting specifically
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
+                wait_time = int(retry_after) if retry_after and retry_after.isdigit() else 30
+                print(f"Cohere API rate limited (429). Waiting for {wait_time}s before retry (attempt {attempt+1}/{max_attempts})...")
+                time.sleep(wait_time)
+                continue
+                
             print(f"Cohere status {r.status_code}: {r.text[:100]}")
         except Exception as e:
             print(f"Cohere attempt {attempt+1} failed: {e}")
-        time.sleep(2)
+        
+        wait_time = 2 ** attempt
+        time.sleep(wait_time)
     raise RuntimeError("Cohere embedding failed")
 
 def split_sentences(text):
@@ -85,7 +97,7 @@ def chunk_semantic(text):
 
 # Connect Qdrant
 print("Connecting to Qdrant...")
-client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=60)
 
 # Recreate collection with Cohere dim (384)
 try:
@@ -99,6 +111,19 @@ client.create_collection(
     vectors_config=models.VectorParams(size=COHERE_DIM, distance=models.Distance.COSINE)
 )
 print(f"Created collection: {COLLECTION_NAME} (dim={COHERE_DIM})")
+
+# Create payload indexes for filtering fields
+client.create_payload_index(
+    collection_name=COLLECTION_NAME,
+    field_name="language",
+    field_schema=models.PayloadSchemaType.KEYWORD
+)
+client.create_payload_index(
+    collection_name=COLLECTION_NAME,
+    field_name="strategy",
+    field_schema=models.PayloadSchemaType.KEYWORD
+)
+print("Created payload indexes for 'language' and 'strategy'")
 
 all_docs, all_metas, all_ids = [], [], []
 
@@ -132,7 +157,11 @@ for lang in LANGUAGES:
     for row in rows:
         query_id = str(row.get("query_id", ""))
         passages = row.get("passages", {})
-        target = passages.get("Translated_passages") or passages.get("English_passages") or []
+        target = passages.get("Translated_passages")
+        if target is None:
+            target = passages.get("English_passages")
+        if target is None:
+            target = []
         if isinstance(target, np.ndarray):
             target = target.tolist()
         for p_idx, passage in enumerate(target):
