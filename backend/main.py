@@ -106,27 +106,33 @@ def debug_hf():
     """Debug endpoint to test HF Inference API directly from Render."""
     hf_token = os.environ.get("HF_TOKEN", "NOT_SET")
     token_preview = hf_token[:10] + "..." if len(hf_token) > 10 else hf_token
-    
-    url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {hf_token}"}
-    
+
+    results = {}
+
+    # Test 1: HF API
     try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json={"inputs": "test", "options": {"wait_for_model": True}},
-            timeout=30
-        )
-        return {
-            "token_preview": token_preview,
-            "status_code": response.status_code,
-            "response_preview": str(response.text)[:300]
-        }
+        url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {hf_token}"}
+        response = requests.post(url, headers=headers, json={"inputs": "test", "options": {"wait_for_model": True}}, timeout=10)
+        results["hf_api"] = {"status_code": response.status_code, "preview": response.text[:200]}
     except Exception as e:
-        return {
-            "token_preview": token_preview,
-            "error": str(e)
-        }
+        results["hf_api"] = {"error": str(e)}
+
+    # Test 2: Qdrant (already works?)
+    try:
+        r = requests.get("https://api.groq.com", timeout=5)
+        results["groq_reachable"] = {"status_code": r.status_code}
+    except Exception as e:
+        results["groq_reachable"] = {"error": str(e)}
+
+    # Test 3: Google DNS
+    try:
+        r = requests.get("https://8.8.8.8", timeout=5)
+        results["internet"] = "reachable"
+    except Exception as e:
+        results["internet"] = str(e)
+
+    return {"token_preview": token_preview, "results": results}
 
 if __name__ == "__main__":
     import uvicorn
