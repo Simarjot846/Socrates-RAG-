@@ -11,12 +11,10 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-# Import RAGPipeline (it will import and use sentence-transformers and chromadb)
 from pipeline import RAGPipeline
 
 app = FastAPI(title="Voice-Enabled RAG Hackathon API")
 
-# Enable CORS for frontend compatibility
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global pipeline container
 pipeline = None
 
 @app.on_event("startup")
@@ -42,7 +39,6 @@ class TextQueryPayload(BaseModel):
 async def query_text(payload: TextQueryPayload):
     if not pipeline:
         raise HTTPException(status_code=503, detail="Pipeline not initialized yet")
-    
     try:
         result = await pipeline.run(text_query=payload.query)
         return result
@@ -58,17 +54,13 @@ async def query_text(payload: TextQueryPayload):
 async def predict_audio(file: UploadFile = File(...)):
     if not pipeline:
         raise HTTPException(status_code=503, detail="Pipeline not initialized yet")
-    
-    # Save UploadFile to a local temporary file on D drive (since C drive is out of space)
     temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
     os.makedirs(temp_dir, exist_ok=True)
     ext = os.path.splitext(file.filename)[1] or ".wav"
     temp_file_path = os.path.join(temp_dir, f"upload_{os.getpid()}_{int(time.time())}{ext}")
-    
     try:
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
         result = await pipeline.run(audio_file_path=temp_file_path)
         return result
     except Exception as e:
@@ -79,7 +71,6 @@ async def predict_audio(file: UploadFile = File(...)):
             "latency_ms": {"stt": 0, "guard_in": 0, "retrieval": 0, "generation": 0, "guard_out": 0, "total": 0}
         }
     finally:
-        # Clean up temp file
         if os.path.exists(temp_file_path):
             try:
                 os.remove(temp_file_path)
@@ -101,38 +92,25 @@ def get_status():
     except Exception as e:
         return {"status": "error", "message": str(e), "db_count": 0}
 
-@app.get("/api/debug-hf")
-def debug_hf():
-    """Debug endpoint to test HF Inference API directly from Render."""
-    hf_token = os.environ.get("HF_TOKEN", "NOT_SET")
-    token_preview = hf_token[:10] + "..." if len(hf_token) > 10 else hf_token
-
+@app.get("/api/debug-net")
+def debug_net():
+    """Test which external APIs are reachable from Render."""
+    endpoints = {
+        "cohere": "https://api.cohere.com",
+        "groq": "https://api.groq.com",
+        "hf_inference": "https://api-inference.huggingface.co",
+        "voyage": "https://api.voyageai.com",
+        "together": "https://api.together.xyz",
+        "jina": "https://api.jina.ai",
+    }
     results = {}
-
-    # Test 1: HF API
-    try:
-        url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {hf_token}"}
-        response = requests.post(url, headers=headers, json={"inputs": "test", "options": {"wait_for_model": True}}, timeout=10)
-        results["hf_api"] = {"status_code": response.status_code, "preview": response.text[:200]}
-    except Exception as e:
-        results["hf_api"] = {"error": str(e)}
-
-    # Test 2: Qdrant (already works?)
-    try:
-        r = requests.get("https://api.groq.com", timeout=5)
-        results["groq_reachable"] = {"status_code": r.status_code}
-    except Exception as e:
-        results["groq_reachable"] = {"error": str(e)}
-
-    # Test 3: Google DNS
-    try:
-        r = requests.get("https://8.8.8.8", timeout=5)
-        results["internet"] = "reachable"
-    except Exception as e:
-        results["internet"] = str(e)
-
-    return {"token_preview": token_preview, "results": results}
+    for name, url in endpoints.items():
+        try:
+            r = requests.get(url, timeout=5)
+            results[name] = f"reachable (HTTP {r.status_code})"
+        except Exception as e:
+            results[name] = f"BLOCKED: {str(e)[:80]}"
+    return results
 
 if __name__ == "__main__":
     import uvicorn

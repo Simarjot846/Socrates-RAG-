@@ -7,7 +7,6 @@ import numpy as np
 from groq import AsyncGroq
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from fastembed import TextEmbedding
 
 class RAGPipeline:
     def __init__(self):
@@ -40,12 +39,8 @@ class RAGPipeline:
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
         self.qdrant_client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key)
 
-        # Load fastembed ONNX model (pre-cached in Docker image at ~/.cache/fastembed)
-        print(f"Loading embedding model: {self.model_name} via fastembed ONNX...")
-        self.embedding_model = TextEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        print("Embedding model loaded.")
+        # Embedding service URL (HF Space that hosts the embedding microservice)
+        self.embed_service_url = os.environ.get("EMBED_SERVICE_URL", "")
 
     def clean_thinking(self, text: str) -> str:
         """Strips <think>...</think> reasoning blocks from LLM responses."""
@@ -164,9 +159,18 @@ class RAGPipeline:
             return True, ""
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed query using fastembed ONNX — model pre-cached in Docker image."""
-        embeddings = list(self.embedding_model.embed([text]))
-        return embeddings[0].tolist()
+        """Call the HF Space embedding microservice."""
+        url = self.embed_service_url.rstrip("/") + "/embed"
+        for attempt in range(4):
+            try:
+                response = requests.post(url, json={"text": text}, timeout=30)
+                if response.status_code == 200:
+                    return response.json()["embedding"]
+                print(f"Embed service status {response.status_code}: {response.text[:100]}")
+            except Exception as e:
+                print(f"Embed service call failed (attempt {attempt+1}): {e}")
+            time.sleep(2)
+        raise RuntimeError("Failed to generate embedding via embed service")
 
     def retrieve(self, query_vector: list[float], detected_lang_code: str, top_k=5) -> tuple[list[dict], bool]:
         """Retrieves top-k candidates across all strategies, filters by language, and re-ranks."""
