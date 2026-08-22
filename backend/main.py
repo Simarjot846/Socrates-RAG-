@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import time
+import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -99,6 +100,33 @@ def get_status():
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "db_count": 0}
+
+@app.get("/api/debug-hf")
+def debug_hf():
+    """Debug endpoint to test HF Inference API directly from Render."""
+    hf_token = os.environ.get("HF_TOKEN", "NOT_SET")
+    token_preview = hf_token[:10] + "..." if len(hf_token) > 10 else hf_token
+    
+    url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {hf_token}"}
+    
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"inputs": "test", "options": {"wait_for_model": True}},
+            timeout=30
+        )
+        return {
+            "token_preview": token_preview,
+            "status_code": response.status_code,
+            "response_preview": str(response.text)[:300]
+        }
+    except Exception as e:
+        return {
+            "token_preview": token_preview,
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
