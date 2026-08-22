@@ -42,6 +42,7 @@ class RAGPipeline:
 
         # Load fastembed ONNX model (pre-cached in Docker image, no network needed)
         print(f"Loading embedding model: {self.model_name} via fastembed ONNX...")
+        os.environ.setdefault("FASTEMBED_CACHE_PATH", "/app/fastembed_cache")
         self.embedding_model = TextEmbedding(
             model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )

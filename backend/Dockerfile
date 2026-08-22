@@ -6,9 +6,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the fastembed ONNX model at BUILD time (not runtime)
-# This bakes the model into the image so no outbound network needed at startup
-RUN python -c "from fastembed import TextEmbedding; model = TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); list(model.embed(['warmup']))"
+# Pre-download the fastembed ONNX model at BUILD time into a fixed cache dir
+ENV FASTEMBED_CACHE_PATH=/app/fastembed_cache
+RUN python -c "\
+import os; \
+os.environ['FASTEMBED_CACHE_PATH'] = '/app/fastembed_cache'; \
+from fastembed import TextEmbedding; \
+model = TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
+list(model.embed(['warmup'])); \
+print('Model cached successfully')"
 
 COPY . .
 
