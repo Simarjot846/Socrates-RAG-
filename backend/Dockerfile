@@ -6,15 +6,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the fastembed ONNX model at BUILD time into a fixed cache dir
-ENV FASTEMBED_CACHE_PATH=/app/fastembed_cache
+# Pre-download the fastembed ONNX model at BUILD time into home cache
+# fastembed defaults to ~/.cache/fastembed — set HOME so it's predictable
+ENV HOME=/app
 RUN python -c "\
-import os; \
-os.environ['FASTEMBED_CACHE_PATH'] = '/app/fastembed_cache'; \
 from fastembed import TextEmbedding; \
 model = TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
 list(model.embed(['warmup'])); \
-print('Model cached successfully')"
+print('Model cached at ~/.cache/fastembed')"
+
+# Verify the cache exists
+RUN ls -la /app/.cache/fastembed/ || echo "Cache dir not found"
 
 COPY . .
 

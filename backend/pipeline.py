@@ -40,9 +40,8 @@ class RAGPipeline:
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
         self.qdrant_client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key)
 
-        # Load fastembed ONNX model (pre-cached in Docker image, no network needed)
+        # Load fastembed ONNX model (pre-cached in Docker image at ~/.cache/fastembed)
         print(f"Loading embedding model: {self.model_name} via fastembed ONNX...")
-        os.environ.setdefault("FASTEMBED_CACHE_PATH", "/app/fastembed_cache")
         self.embedding_model = TextEmbedding(
             model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
