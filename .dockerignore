@@ -1,0 +1,10 @@
+frontend/
+node_modules/
+.git/
+.venv/
+venv/
+backend/.venv/
+__pycache__/
+*.pyc
+temp/
+latency_results.csv
