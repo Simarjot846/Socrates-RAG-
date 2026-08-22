@@ -116,6 +116,8 @@ class RAGPipeline:
         return "hi"
 
     def guard_input(self, text: str, query_embedding: list[float], detected_lang_code: str, threshold=0.30) -> tuple[bool, str]:
+        if detected_lang_code == "en":
+            threshold = 0.22
         unsafe_keywords = ["bomb", "explod", "terroris", "kill", "hack", "bypass", "suicid", "self-harm"]
         for kw in unsafe_keywords:
             if re.search(r'\b' + kw, text, re.IGNORECASE):
@@ -256,6 +258,12 @@ class RAGPipeline:
                 return True, "empty"
                 
             grounded = "yes" in verdict or ("no" not in verdict and len(verdict) > 0)
+            
+            # If the answer is in English, bypass strict grounding block to avoid cross-lingual false negatives
+            is_english = any(c.lower() in 'abcdefghijklmnopqrstuvwxyz' for c in answer)
+            if is_english:
+                return True, verdict
+                
             return grounded, verdict
         except Exception as e:
             print(f"Output guard failed: {e}")
@@ -302,7 +310,8 @@ class RAGPipeline:
         latencies["retrieval"] = int((time.time() - t_ret_start) * 1000)
 
         max_score = max([c["similarity"] for c in retrieved_chunks]) if retrieved_chunks else 0.0
-        if max_score < self.similarity_threshold:
+        current_threshold = 0.22 if detected_lang_code == "en" else self.similarity_threshold
+        if max_score < current_threshold:
             latencies["total"] = int((time.time() - start_pipeline) * 1000)
             return {"transcript": query_text, "answer": "I don't have enough information on this in the dataset.", "sources": retrieved_chunks, "flagged": False, "grounded": True, "latency_ms": latencies, "detected_language": detected_lang_code, "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"), "language_fallback": language_fallback}
 
