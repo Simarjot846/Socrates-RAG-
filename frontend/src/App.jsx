@@ -101,55 +101,11 @@ function AnimatedNumber({ value }) {
 // VIEW 1: HOME PAGE ROUTE VIEW
 // ----------------------------------------------------
 function HomeView({ dbStatus }) {
-  const videoRef = useRef(null);
-
-  useEffect(() => {
-    const playVideo = async () => {
-      if (videoRef.current) {
-        try {
-          // Attempt unmuted play first
-          videoRef.current.muted = false;
-          await videoRef.current.play();
-        } catch (err) {
-          console.log("Unmuted autoplay was blocked by browser. Retrying muted...", err);
-          try {
-            // Muted fallback
-            if (videoRef.current) {
-              videoRef.current.muted = true;
-              await videoRef.current.play();
-            }
-          } catch (muteErr) {
-            console.error("Autoplay failed:", muteErr);
-          }
-        }
-      }
-    };
-
-    playVideo();
-
-    // Trigger unmute and play as soon as the user interacts with the page (click/tap)
-    const handleFirstInteraction = () => {
-      if (videoRef.current) {
-        videoRef.current.muted = false;
-        videoRef.current.play().catch(e => console.log("Interaction play interrupted:", e));
-      }
-      document.removeEventListener('click', handleFirstInteraction);
-    };
-
-    document.addEventListener('click', handleFirstInteraction);
-    return () => {
-      document.removeEventListener('click', handleFirstInteraction);
-    };
-  }, []);
-
   return (
     <div className="home-container">
       {/* Hero section */}
       <header className="app-header animate-fade-in">
         <div className="brand-section">
-          <div className="team-badge">
-            Built by Rudra Titans
-          </div>
           <h1 className="display-title">
             Socrates Voice <span className="gradient-text-rag">RAG</span>
           </h1>
@@ -206,22 +162,63 @@ function HomeView({ dbStatus }) {
         </Link>
       </div>
 
-      {/* Video Presentation Section */}
-      <section className="video-section glass-card animate-fade-in delay-200">
-        <h2 className="section-title">Watch How We Built This</h2>
-        <p className="section-subtitle">A walk-through of the system architecture, performance optimizations, and multi-strategy design.</p>
-        <div className="video-player-container">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            controls
-            className="process-video"
-            poster="https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1200&q=80"
-          >
-            <source src="/process_video.mp4" type="video/mp4" />
-            Your browser does not support the video tag.
-          </video>
+      {/* Architecture Diagram replacing the video */}
+      <section className="arch-section glass-card animate-fade-in delay-200">
+        <h2 className="section-title">System Architecture</h2>
+        <p className="section-subtitle">End-to-end pipeline from voice input to grounded, multilingual answer.</p>
+        <div className="arch-diagram">
+          <svg viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg" aria-label="System architecture diagram">
+            {/* Defs */}
+            <defs>
+              <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 z" fill="rgba(74,222,128,0.6)" />
+              </marker>
+              <filter id="glow">
+                <feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
+                <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+
+            {/* Boxes */}
+            {[
+              { x: 20,  label: "Voice / Text", sub: "Input" },
+              { x: 170, label: "Sarvam STT", sub: "saaras:v3" },
+              { x: 320, label: "Cohere Embed", sub: "multilingual-light" },
+              { x: 470, label: "Qdrant ANN", sub: "3 strategies" },
+              { x: 620, label: "Groq LLM", sub: "gpt-oss-20b" },
+              { x: 770, label: "Guard Out", sub: "Grounding check" },
+            ].map(({ x, label, sub }, i) => (
+              <g key={i}>
+                <rect x={x} y={70} width={120} height={60} rx="6"
+                  fill="rgba(12,22,16,0.95)" stroke="rgba(74,222,128,0.28)" strokeWidth="1"
+                  filter="url(#glow)"
+                />
+                <text x={x + 60} y={97} textAnchor="middle" fill="#eef3ef" fontSize="11" fontWeight="700" fontFamily="'JetBrains Mono', monospace">{label}</text>
+                <text x={x + 60} y={113} textAnchor="middle" fill="rgba(74,222,128,0.65)" fontSize="9" fontFamily="'JetBrains Mono', monospace">{sub}</text>
+                {/* Arrow to next box */}
+                {i < 5 && (
+                  <line x1={x + 120} y1={100} x2={x + 148} y2={100}
+                    stroke="rgba(74,222,128,0.5)" strokeWidth="1.5"
+                    markerEnd="url(#arr)" />
+                )}
+              </g>
+            ))}
+
+            {/* Labels above */}
+            {[
+              { x: 80,  text: "① Capture" },
+              { x: 230, text: "② Transcribe" },
+              { x: 380, text: "③ Embed + Guard" },
+              { x: 530, text: "④ Retrieve" },
+              { x: 680, text: "⑤ Generate" },
+              { x: 830, text: "⑥ Verify" },
+            ].map(({ x, text }, i) => (
+              <text key={i} x={x} y={58} textAnchor="middle" fill="rgba(74,222,128,0.4)" fontSize="9" fontFamily="'JetBrains Mono', monospace" letterSpacing="0.05em">{text}</text>
+            ))}
+
+            {/* Bottom label */}
+            <text x={450} y={165} textAnchor="middle" fill="rgba(74,222,128,0.2)" fontSize="9" fontFamily="'JetBrains Mono', monospace" letterSpacing="0.08em">MSMARCO-XI · 14 LANGUAGES · 24K+ INDEXED CHUNKS</text>
+          </svg>
         </div>
       </section>
 
@@ -231,7 +228,7 @@ function HomeView({ dbStatus }) {
           <div className="overview-content glass-card">
             <h2 className="section-title">Project Overview</h2>
             <p className="overview-text">
-              Socrates Voice RAG is an advanced, multilingual voice-enabled console built by <strong>Team Rudra Titans</strong> as an official submission for <strong>HH Goa 2026</strong>.
+              Socrates Voice RAG is an advanced, multilingual voice-enabled RAG system built as a submission for <strong>HH Goa 2026</strong>.
               The system delivers responses across 14 languages utilizing three distinct chunking strategies (fixed, boundary, and semantic) for optimal context resolution.
               Real-time safety guardrails protect the query pathway, ensuring generated answers are strictly grounded and verified against source documents before output.
             </p>
@@ -292,8 +289,7 @@ function DemoView({
             Back to Home
           </Link>
           <div className="demo-title-bar">
-            <h1 className="demo-headline">Rudra Console</h1>
-            <span className="demo-team-pill">Rudra Titans</span>
+            <h1 className="demo-headline">Console</h1>
           </div>
         </div>
 
