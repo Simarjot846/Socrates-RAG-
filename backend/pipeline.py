@@ -27,9 +27,9 @@ class RAGPipeline:
             "te": "Telugu", "ur": "Urdu",
         }
 
-        self.qdrant_url = os.environ.get("QDRANT_URL", "")
-        self.qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
-        self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag")
+        self.qdrant_url = os.environ.get("QDRANT_URL", "").strip()
+        self.qdrant_api_key = os.environ.get("QDRANT_API_KEY", "").strip()
+        self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "msmarco_rag").strip()
         self.qdrant_client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key, timeout=60)
 
     def clean_thinking(self, text: str) -> str:
