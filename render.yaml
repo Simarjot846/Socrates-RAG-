@@ -5,6 +5,13 @@ services:
     rootDir: backend
     buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # Keep the free instance alive — Render sets this automatically for web services
+    # but we also read it in code to drive the self-ping loop.
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      # Render injects RENDER_EXTERNAL_URL automatically for web services.
+      # The app reads it to self-ping and prevent cold starts.
+      # All secret keys (QDRANT_URL, QDRANT_API_KEY, GROQ_API_KEY, etc.)
+      # must be set manually in the Render dashboard → Environment tab.
+    healthCheckPath: /api/ping

@@ -3,9 +3,11 @@ import sys
 import shutil
 import tempfile
 import time
+import asyncio
 import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -31,15 +33,43 @@ app.add_middleware(
 
 pipeline = None
 
+# ── Keep-alive self-ping ──────────────────────────────────────────────────────
+# Render free tier spins down after 15 min of inactivity.
+# This background task pings /api/ping every 10 minutes so the service
+# stays warm and never cold-starts during a demo.
+SELF_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+
+async def _keep_alive_loop():
+    """Ping own /api/ping every 10 minutes to prevent Render spin-down."""
+    await asyncio.sleep(30)   # wait for startup to finish first
+    while True:
+        if SELF_URL:
+            try:
+                requests.get(f"{SELF_URL}/api/ping", timeout=10)
+                print("[keep-alive] ping sent")
+            except Exception as e:
+                print(f"[keep-alive] ping failed: {e}")
+        await asyncio.sleep(600)   # 10 minutes
+
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     global pipeline
     print("Initializing RAG Pipeline components on startup...")
     pipeline = RAGPipeline()
     print("RAG Pipeline initialized and ready.")
+    # Start keep-alive background loop only when deployed on Render
+    if SELF_URL:
+        asyncio.create_task(_keep_alive_loop())
+        print(f"[keep-alive] background pinger started → {SELF_URL}")
 
 class TextQueryPayload(BaseModel):
     query: str
+
+# ── Health / keep-alive endpoints ─────────────────────────────────────────────
+@app.get("/api/ping")
+def ping():
+    """Lightweight keep-alive endpoint. Returns instantly."""
+    return {"ok": True}
 
 @app.post("/api/query-text")
 async def query_text(payload: TextQueryPayload):

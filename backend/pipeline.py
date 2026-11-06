@@ -12,10 +12,10 @@ class RAGPipeline:
     def __init__(self):
         self.sarvam_api_key = os.environ.get("SARVAM_API_KEY", "")
         self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
-        self.groq_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.groq_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
         self.similarity_threshold = 0.30
         self.groq_client = AsyncGroq(api_key=self.groq_api_key)
-        self.guard_out_model = "llama-3.1-8b-instant"
+        self.guard_out_model = self.groq_model   # use same model — no separate 404
         self.model_name = "embed-multilingual-light-v3.0"
         self.cohere_api_key = os.environ.get("COHERE_API_KEY", "")
 
@@ -40,7 +40,7 @@ class RAGPipeline:
         return cleaned.strip()
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed using Cohere API — works from Render free tier."""
+        """Embed using Cohere API."""
         url = "https://api.cohere.com/v1/embed"
         headers = {
             "Authorization": f"Bearer {self.cohere_api_key}",
@@ -52,27 +52,25 @@ class RAGPipeline:
             "input_type": "search_query",
             "truncate": "END",
         }
-        max_attempts = 5
+        max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                r = requests.post(url, headers=headers, json=payload, timeout=15)
+                r = requests.post(url, headers=headers, json=payload, timeout=10)
                 if r.status_code == 200:
                     return r.json()["embeddings"][0]
-                
-                # Handle rate limiting specifically
+
                 if r.status_code == 429:
                     retry_after = r.headers.get("Retry-After")
-                    wait_time = int(retry_after) if retry_after and retry_after.isdigit() else 15
-                    print(f"Cohere embed rate limited (429). Waiting for {wait_time}s before retry (attempt {attempt+1}/{max_attempts})...")
+                    wait_time = int(retry_after) if retry_after and retry_after.isdigit() else 10
+                    print(f"Cohere embed rate limited. Waiting {wait_time}s (attempt {attempt+1}/{max_attempts})...")
                     time.sleep(wait_time)
                     continue
-                    
+
                 print(f"Cohere embed status {r.status_code}: {r.text[:100]}")
             except Exception as e:
                 print(f"Cohere embed attempt {attempt+1} failed: {e}")
-            
-            wait_time = 2 ** attempt
-            time.sleep(wait_time)
+
+            time.sleep(2 ** attempt)
         raise RuntimeError("Failed to generate embedding via Cohere API")
 
     def _sync_transcribe(self, file_path: str) -> dict:
@@ -117,7 +115,7 @@ class RAGPipeline:
 
     def guard_input(self, text: str, query_embedding: list[float], detected_lang_code: str, threshold=0.30) -> tuple[bool, str]:
         if detected_lang_code == "en":
-            threshold = 0.22
+            threshold = 0.15  # no English in index; use very low threshold so queries aren't blocked
         unsafe_keywords = ["bomb", "explod", "terroris", "kill", "hack", "bypass", "suicid", "self-harm"]
         for kw in unsafe_keywords:
             if re.search(r'\b' + kw, text, re.IGNORECASE):
@@ -229,41 +227,50 @@ class RAGPipeline:
                 return "I don't have enough information on this in the dataset."
 
         context = "\n\n".join([f"Source {i+1}:\n{c['text']}" for i, c in enumerate(chunks)])
+        # For English queries with cross-lingual context, instruct the model to answer in English
+        answer_lang = "English" if detected_lang_code == "en" else lang_name
         response = await self.groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": f"You are a factual QA system. Answer ONLY from the provided contexts in {lang_name}. Keep it concise."},
+                {"role": "system", "content": f"You are a factual QA system. Answer ONLY from the provided contexts in {answer_lang}. Keep it concise."},
                 {"role": "user", "content": f"Contexts:\n{context}\n\nQuestion: {query}\nAnswer:"}
             ],
-            model=self.groq_model, temperature=0.0, max_tokens=1024, timeout=10.0
+            model=self.groq_model, temperature=0.0, max_tokens=512, timeout=10.0
         )
         return response.choices[0].message.content.strip()
 
     async def guard_output(self, answer: str, chunks: list[dict]) -> tuple[bool, str]:
+        """
+        Lightweight output grounding check.
+        Uses only the top chunk and a very tight token budget to stay fast.
+        Returns (grounded, verdict).
+        """
         if not chunks:
             return True, "yes"
-        # Use top 3 chunks for output grounding check to stay within sandbox prompt limits
-        verification_chunks = chunks[:3]
-        context_texts = "\n\n".join([f"Source {i+1}:\n{c['text']}" for i, c in enumerate(verification_chunks)])
+
+        # Only check against the single best chunk to minimise latency
+        top_chunk = chunks[0]["text"]
         try:
             response = await self.groq_client.chat.completions.create(
-                messages=[{"role": "user", "content": f"Context:\n{context_texts}\n\nAnswer: {answer}\n\nIs this answer supported by the context? Respond only 'yes' or 'no'."}],
-                model=self.groq_model, temperature=0.0, max_tokens=512, timeout=8.0
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Context:\n{top_chunk}\n\n"
+                        f"Answer: {answer}\n\n"
+                        "Is this answer supported by the context? Reply only 'yes' or 'no'."
+                    )
+                }],
+                model=self.guard_out_model,
+                temperature=0.0,
+                max_tokens=4,   # we only need 'yes' or 'no'
+                timeout=5.0
             )
             raw_content = response.choices[0].message.content or ""
             verdict = self.clean_thinking(raw_content).strip().lower()
-            
-            # If the model returns empty response (API/sandbox anomaly), default to grounded=True
+
             if not verdict:
-                print("Output guard returned empty verdict. Defaulting to True.")
                 return True, "empty"
-                
+
             grounded = "yes" in verdict or ("no" not in verdict and len(verdict) > 0)
-            
-            # If the answer is in English, bypass strict grounding block to avoid cross-lingual false negatives
-            is_english = any(c.lower() in 'abcdefghijklmnopqrstuvwxyz' for c in answer)
-            if is_english:
-                return True, verdict
-                
             return grounded, verdict
         except Exception as e:
             print(f"Output guard failed: {e}")
@@ -276,6 +283,7 @@ class RAGPipeline:
         query_text = ""
         sarvam_lang_code = None
 
+        # ── Step 1: STT (only for audio) ──────────────────────────────────────
         if audio_file_path:
             t_start = time.time()
             try:
@@ -286,35 +294,69 @@ class RAGPipeline:
                 latencies["stt"] = int((time.time() - t_start) * 1000)
             except Exception as e:
                 latencies["total"] = int((time.time() - start_pipeline) * 1000)
-                return {"error": f"STT failed: {str(e)}", "flagged": True, "grounded": False, "latency_ms": latencies, "detected_language": "hi", "detected_language_name": "Hindi", "language_fallback": False}
+                return {
+                    "error": f"STT failed: {str(e)}", "flagged": True, "grounded": False,
+                    "latency_ms": latencies, "detected_language": "hi",
+                    "detected_language_name": "Hindi", "language_fallback": False
+                }
         elif text_query:
             query_text = text_query.strip()
 
         if not query_text:
             latencies["total"] = int((time.time() - start_pipeline) * 1000)
-            return {"error": "Empty query", "flagged": True, "grounded": False, "latency_ms": latencies, "detected_language": "hi", "detected_language_name": "Hindi", "language_fallback": False}
+            return {
+                "error": "Empty query", "flagged": True, "grounded": False,
+                "latency_ms": latencies, "detected_language": "hi",
+                "detected_language_name": "Hindi", "language_fallback": False
+            }
 
         detected_lang_code = self.detect_language(query_text, sarvam_lang_code)
 
+        # ── Step 2: Embed + Guard-In + Retrieve (pipelined) ───────────────────
+        # embed_query is CPU-bound (sync HTTP), run it in a thread to not block
         t_guard_in_start = time.time()
-        query_vector = self.embed_query(query_text)
-        guard_ok, guard_reason = self.guard_input(query_text, query_vector, detected_lang_code)
+        query_vector = await asyncio.to_thread(self.embed_query, query_text)
+
+        # Guard and retrieve can now run concurrently — both only need the vector
+        guard_task = asyncio.to_thread(
+            self.guard_input, query_text, query_vector, detected_lang_code
+        )
+        retrieve_task = asyncio.to_thread(
+            self.retrieve, query_vector, detected_lang_code
+        )
+        (guard_ok, guard_reason), (retrieved_chunks, language_fallback) = await asyncio.gather(
+            guard_task, retrieve_task
+        )
         latencies["guard_in"] = int((time.time() - t_guard_in_start) * 1000)
+        latencies["retrieval"] = latencies["guard_in"]   # they ran together; attribute total to guard_in
 
         if not guard_ok:
             latencies["total"] = int((time.time() - start_pipeline) * 1000)
-            return {"transcript": query_text, "answer": f"Request blocked: {guard_reason}", "sources": [], "flagged": True, "grounded": False, "latency_ms": latencies, "detected_language": detected_lang_code, "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"), "language_fallback": False}
-
-        t_ret_start = time.time()
-        retrieved_chunks, language_fallback = self.retrieve(query_vector, detected_lang_code)
-        latencies["retrieval"] = int((time.time() - t_ret_start) * 1000)
+            return {
+                "transcript": query_text,
+                "answer": f"Request blocked: {guard_reason}",
+                "sources": [], "flagged": True, "grounded": False,
+                "latency_ms": latencies,
+                "detected_language": detected_lang_code,
+                "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"),
+                "language_fallback": False
+            }
 
         max_score = max([c["similarity"] for c in retrieved_chunks]) if retrieved_chunks else 0.0
-        current_threshold = 0.22 if detected_lang_code == "en" else self.similarity_threshold
+        current_threshold = 0.15 if detected_lang_code == "en" else self.similarity_threshold
         if max_score < current_threshold:
             latencies["total"] = int((time.time() - start_pipeline) * 1000)
-            return {"transcript": query_text, "answer": "I don't have enough information on this in the dataset.", "sources": retrieved_chunks, "flagged": False, "grounded": True, "latency_ms": latencies, "detected_language": detected_lang_code, "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"), "language_fallback": language_fallback}
+            return {
+                "transcript": query_text,
+                "answer": "I don't have enough information on this in the dataset.",
+                "sources": retrieved_chunks, "flagged": False, "grounded": True,
+                "latency_ms": latencies,
+                "detected_language": detected_lang_code,
+                "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"),
+                "language_fallback": language_fallback
+            }
 
+        # ── Step 3: Generate ──────────────────────────────────────────────────
         t_gen_start = time.time()
         try:
             raw_answer = await self.generate_answer(query_text, retrieved_chunks, detected_lang_code)
@@ -322,8 +364,15 @@ class RAGPipeline:
             latencies["generation"] = int((time.time() - t_gen_start) * 1000)
         except Exception as e:
             latencies["total"] = int((time.time() - start_pipeline) * 1000)
-            return {"error": f"Generation failed: {str(e)}", "flagged": True, "grounded": False, "latency_ms": latencies, "detected_language": detected_lang_code, "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"), "language_fallback": language_fallback}
+            return {
+                "error": f"Generation failed: {str(e)}", "flagged": True, "grounded": False,
+                "latency_ms": latencies,
+                "detected_language": detected_lang_code,
+                "detected_language_name": self.LANGUAGE_NAMES.get(detected_lang_code, "Unknown"),
+                "language_fallback": language_fallback
+            }
 
+        # ── Step 4: Output guard ──────────────────────────────────────────────
         t_guard_out_start = time.time()
         try:
             grounded, verdict = await self.guard_output(answer, retrieved_chunks)

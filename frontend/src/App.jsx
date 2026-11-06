@@ -323,12 +323,12 @@ function DemoView({
             </p>
             <div className="examples-grid">
               <button
-                className={`example-btn ${queryText === "what is the difference between local disk C and local disk D?" ? 'active' : ''}`}
-                onClick={() => selectExampleQuery("what is the difference between local disk C and local disk D?")}
+                className={`example-btn ${queryText === "what is a corporation?" ? 'active' : ''}`}
+                onClick={() => selectExampleQuery("what is a corporation?")}
                 disabled={loading}
               >
                 <span className="lang-code-indicator">EN</span>
-                <span className="query-btn-text">Difference between C and D drive?</span>
+                <span className="query-btn-text">What is a corporation?</span>
               </button>
               <button
                 className={`example-btn ${queryText === "कॉर्पोरेशन क्या है?" ? 'active' : ''}`}
@@ -768,7 +768,13 @@ export default function App() {
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
 
-  // Check DB status on startup
+  // Warm up the backend the instant the app loads so it is never cold when the
+  // user submits their first query. /api/ping is a no-op that just wakes Render.
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/ping`).catch(() => {/* silent – best-effort warm-up */});
+  }, []);
+
+  // Check DB status on startup and keep polling every 5 s
   useEffect(() => {
     const checkStatus = async () => {
       try {
